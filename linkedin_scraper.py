@@ -1,19 +1,34 @@
+import json
 import os
 import time
 
 import pandas as pd
+import rocketreach
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 
 
 class LinkedInScraper:
-    def __init__(self, email, password):
-        """Initialize the LinkedIn scraper with login credentials."""
+    def __init__(self, email, password, rr_api_key=None):
+        """Initialize the LinkedIn scraper with login credentials and optional RocketReach API key."""
         self.email = email
         self.password = password
         self.driver = None
         self.data = []
+        self.rr_api_key = rr_api_key
+        self.rr_client = None
+        self.current_profile_name = "N/A"  # Initialize current profile name
+
+        # Initialize RocketReach client if API key is provided
+        if self.rr_api_key:
+            try:
+                self.rr_client = rocketreach.Gateway(api_key=self.rr_api_key)
+                print("RocketReach client initialized successfully")
+            except Exception as e:
+                print(f"Error initializing RocketReach client: {e}")
+                self.rr_client = None
 
     def setup_driver(self):
         """Set up the Safari WebDriver."""
@@ -74,11 +89,6 @@ class LinkedInScraper:
 
             for page in range(1, num_pages + 1):
                 print(f"Scraping page {page} of search results...")
-
-                # Take a screenshot to debug
-                screenshot_path = f"search_page_{page}.png"
-                self.driver.save_screenshot(screenshot_path)
-                print(f"Saved screenshot to {screenshot_path}")
 
                 # Try different XPath patterns for profile links
                 profile_links = []
@@ -241,6 +251,9 @@ class LinkedInScraper:
                         except:
                             pass
 
+                    # Store the current profile name for use in RocketReach lookup
+                    self.current_profile_name = name
+
                     # Headline
                     try:
                         headline_elem = item.find_element(
@@ -275,6 +288,39 @@ class LinkedInScraper:
                         except:
                             pass
 
+                    # If we have a profile URL, visit the profile to get contact info
+                    linkedin_url = None
+
+                    if profile_url != "N/A":
+                        # Store current URL to return to search results
+                        current_url = self.driver.current_url
+
+                        # Visit profile to get contact info
+                        try:
+                            self.driver.get(profile_url)
+                            time.sleep(3)
+                            linkedin_url = self.extract_contact_info_url(profile_url)
+
+                            # Return to search results
+                            self.driver.get(current_url)
+                            time.sleep(2)
+                        except Exception as e:
+                            print(f"Error getting contact info for {profile_url}: {e}")
+                            # Make sure we return to search results
+                            self.driver.get(current_url)
+                            time.sleep(2)
+
+                    # Look up additional information from RocketReach if we have a profile URL
+                    rr_data = None
+                    if self.rr_client:
+                        # Use contact info URL if available, otherwise use profile URL
+                        lookup_url = linkedin_url if linkedin_url else profile_url
+                        if lookup_url != "N/A":
+                            rr_data = self.lookup_rocketreach(lookup_url)
+
+                    # Convert RocketReach data to JSON string for storage
+                    additional_info = json.dumps(rr_data) if rr_data else "N/A"
+
                     # Add to data
                     if name != "N/A":
                         profile_data = {
@@ -284,6 +330,8 @@ class LinkedInScraper:
                             "About": "N/A",  # Not available in search results
                             "Current Position": headline,  # Using headline as current position
                             "Profile URL": profile_url,
+                            "Contact Info URL": linkedin_url if linkedin_url else "N/A",
+                            "Additional Info": additional_info,  # Add RocketReach data
                         }
                         self.data.append(profile_data)
                         print(f"Extracted data for {name}")
@@ -294,6 +342,157 @@ class LinkedInScraper:
         except Exception as e:
             print(f"Error extracting from search results: {e}")
 
+    def lookup_rocketreach(self, linkedin_url):
+        """
+        Look up a LinkedIn profile on RocketReach to get additional information.
+
+        Args:
+            linkedin_url: The LinkedIn profile URL or contact info URL
+
+        Returns:
+            Dictionary with RocketReach data or None if lookup failed
+        """
+        if not self.rr_client:
+            print("RocketReach client not initialized. Skipping lookup.")
+            return None
+
+        try:
+            print(f"Looking up profile on RocketReach: {linkedin_url}")
+
+            # Extract the profile identifier from the URL
+            # This handles both vanity URLs and ID-based URLs
+            profile_id = None
+
+            # Try to extract the profile ID or username from the URL
+            if "/in/" in linkedin_url:
+                parts = linkedin_url.split("/in/")
+                if len(parts) > 1:
+                    profile_id = parts[1].split("?")[0].split("/")[0]
+            # Handle contact info URL format: /overlay/contact-info/
+            elif "/overlay/contact-info/" in linkedin_url:
+                parts = linkedin_url.split("/overlay/contact-info/")
+                if len(parts) > 1:
+                    profile_id = parts[1].split("?")[0].split("/")[0]
+
+            if not profile_id:
+                print(f"Could not extract profile ID from URL: {linkedin_url}")
+                return None
+
+            print(f"Extracted profile ID: {profile_id}")
+
+            # Clean the URL to ensure it's in the correct format for RocketReach
+            # RocketReach expects URLs in the format: linkedin.com/in/profile-id
+            clean_url = f"linkedin.com/in/{profile_id}"
+
+            print(f"Using clean URL for RocketReach lookup: {clean_url}")
+
+            # Perform the lookup
+            lookup_result = self.rr_client.person.lookup(linkedin_url=clean_url)
+
+            # Debug the response
+            print(f"RocketReach API response type: {type(lookup_result)}")
+            print(f"RocketReach API response attributes: {dir(lookup_result)}")
+
+            if hasattr(lookup_result, "person") and lookup_result.person:
+                print(f"RocketReach lookup successful for {linkedin_url}")
+                print(f"Found data: {lookup_result.person}")
+                return lookup_result.person.to_dict()
+            else:
+                print(f"No RocketReach data found for {linkedin_url}")
+
+                # Try an alternative approach - lookup by name if available
+                if (
+                    hasattr(self, "current_profile_name")
+                    and self.current_profile_name != "N/A"
+                ):
+                    print(f"Trying to look up by name: {self.current_profile_name}")
+                    try:
+                        name_lookup = self.rr_client.person.search(
+                            name=self.current_profile_name, limit=1
+                        )
+                        if (
+                            hasattr(name_lookup, "people")
+                            and name_lookup.people
+                            and len(name_lookup.people) > 0
+                        ):
+                            print(f"Found person by name: {name_lookup.people[0]}")
+                            return name_lookup.people[0].to_dict()
+                    except Exception as e:
+                        print(f"Error looking up by name: {e}")
+                        return {}
+
+                return {}
+
+        except Exception as e:
+            print(f"Error looking up profile on RocketReach: {e}")
+            return None
+
+    def extract_contact_info_url(self, profile_url):
+        """
+        Click on the 'Contact info' button and extract the contact info URL.
+
+        Args:
+            profile_url: The LinkedIn profile URL
+
+        Returns:
+            Tuple of (contact_info_url, email, phone, website) or (None, None, None, None) if not found
+        """
+        try:
+            # Make sure we're on the profile page
+            if profile_url not in self.driver.current_url:
+                self.driver.get(profile_url)
+                time.sleep(3)
+
+            # Try different patterns for the contact info button
+            contact_info_button = None
+            contact_info_patterns = [
+                "//a[@id='top-card-text-details-contact-info' and contains(@class, 'ember-view')]",
+                "//a[contains(text(), 'Contact info')]",
+                "//a[contains(@class, 'link-without-visited-state') and contains(text(), 'Contact info')]",
+                "//a[contains(@href, '/overlay/contact-info/')]",
+            ]
+
+            for pattern in contact_info_patterns:
+                try:
+                    contact_info_button = self.driver.find_element(By.XPATH, pattern)
+                    if contact_info_button:
+                        print(f"Found contact info button using pattern: {pattern}")
+                        break
+                except:
+                    continue
+
+            if not contact_info_button:
+                print("Could not find contact info button")
+                return None, None, None, None
+
+            # Get the href attribute before clicking
+            contact_info_url = contact_info_button.get_attribute("href")
+            contact_info_url = contact_info_url.split("con")
+            print(f"Contact info URL: {contact_info_url}")
+
+            # Click the button to open contact info overlay
+            contact_info_button.click()
+            time.sleep(3)  # Wait for overlay to load
+
+            linkedin_url = None
+            try:
+                linkedin_url = self.driver.find_element(
+                    By.XPATH, "//a[contains(@href, 'linkedin.com/in/')]"
+                )
+                linkedin_url = linkedin_url.get_attribute("href")
+            except:
+                pass
+
+            # Close the overlay by pressing Escape
+            self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+            time.sleep(1)
+
+            return linkedin_url
+
+        except Exception as e:
+            print(f"Error extracting contact info: {e}")
+            return None, None, None, None
+
     def scrape_profile(self, profile_url):
         """Visit a profile and extract basic information."""
         try:
@@ -301,10 +500,8 @@ class LinkedInScraper:
             self.driver.get(profile_url)
             time.sleep(5)  # Increased wait time for profile to load
 
-            # Take a screenshot to debug
-            screenshot_path = f"profile_{profile_url.split('/')[-1]}.png"
-            self.driver.save_screenshot(screenshot_path)
-            print(f"Saved profile screenshot to {screenshot_path}")
+            # Extract contact info URL and details
+            linkedin_url = self.extract_contact_info_url(profile_url)
 
             # Extract basic profile information using multiple possible selectors
             name = "N/A"
@@ -331,6 +528,9 @@ class LinkedInScraper:
                         break
                 except:
                     continue
+
+            # Store the current profile name for use in RocketReach lookup
+            self.current_profile_name = name
 
             # Headline - try multiple patterns
             headline_patterns = [
@@ -399,6 +599,16 @@ class LinkedInScraper:
             # Extract angel investor specific information
             self.extract_investor_info(profile_url)
 
+            # Look up additional information from RocketReach
+            rr_data = None
+            if self.rr_client:
+                # Use contact info URL if available, otherwise use profile URL
+                lookup_url = linkedin_url if linkedin_url else profile_url
+                rr_data = self.lookup_rocketreach(lookup_url)
+
+            # Convert RocketReach data to JSON string for storage
+            additional_info = json.dumps(rr_data) if rr_data else "N/A"
+
             # Store the extracted data
             profile_data = {
                 "Name": name,
@@ -407,6 +617,8 @@ class LinkedInScraper:
                 "About": about,
                 "Current Position": current_position,
                 "Profile URL": profile_url,
+                "Contact Info URL": linkedin_url if linkedin_url else "N/A",
+                "Additional Info": additional_info,  # Add RocketReach data
             }
 
             self.data.append(profile_data)
@@ -503,16 +715,44 @@ class LinkedInScraper:
             append: If True, append to existing file; if False, overwrite
         """
         if self.data:
-            df = pd.DataFrame(self.data)
+            # Remove duplicate entries based on Profile URL
+            unique_data = []
+            seen_urls = set()
+
+            for entry in self.data:
+                profile_url = entry.get("Profile URL", "")
+                if profile_url and profile_url not in seen_urls:
+                    unique_data.append(entry)
+                    seen_urls.add(profile_url)
+
+            if not unique_data:
+                print("No unique data to save after removing duplicates.")
+                return
+
+            print(f"Removed {len(self.data) - len(unique_data)} duplicate entries")
+
+            df = pd.DataFrame(unique_data)
 
             if append and os.path.exists(filename):
                 # Check if file exists and has content
                 try:
-                    # Read existing CSV to check headers
+                    # Read existing CSV to check headers and existing entries
                     existing_df = pd.read_csv(filename)
 
+                    # Get existing profile URLs to avoid duplicates
+                    existing_urls = set(existing_df["Profile URL"].tolist())
+
+                    # Filter out entries that already exist in the CSV
+                    new_entries = df[~df["Profile URL"].isin(existing_urls)]
+
+                    if new_entries.empty:
+                        print(f"No new entries to append to {filename}")
+                        return
+
+                    print(f"Appending {len(new_entries)} new entries to {filename}")
+
                     # Append without writing headers
-                    df.to_csv(filename, mode="a", header=False, index=False)
+                    new_entries.to_csv(filename, mode="a", header=False, index=False)
                     print(f"Data appended to {filename}")
                 except pd.errors.EmptyDataError:
                     # File exists but is empty, write with headers
@@ -522,6 +762,9 @@ class LinkedInScraper:
                 # Create new file or overwrite existing
                 df.to_csv(filename, index=False)
                 print(f"Data saved to {filename}")
+
+            # Update self.data to contain only unique entries
+            self.data = unique_data
         else:
             print("No data to save.")
 
@@ -538,6 +781,8 @@ class LinkedInScraper:
             if self.login():
                 print(f"Searching for '{search_term}' on LinkedIn...")
                 print(f"Will visit up to {num_profiles} profiles.")
+                if self.rr_client:
+                    print("Profiles will be enriched with RocketReach data.")
                 print("This may take a few minutes. Please wait...")
 
                 # Use visit_profiles instead of search_people
@@ -552,178 +797,283 @@ class LinkedInScraper:
             print(f"Error during scraping process: {e}")
             self.close()
 
-    def visit_profiles(self, search_term, num_profiles=5):
-        """Search for people with the given search term and visit up to the requested number of profiles."""
+    def visit_profiles(self, search_term, num_profiles=5, max_pages=3):
+        """
+        Search for people with the given search term and visit up to the requested number of profiles.
+
+        Args:
+            search_term: The keyword to search for on LinkedIn
+            num_profiles: Maximum number of profiles to visit
+            max_pages: Maximum number of search result pages to navigate through
+        """
         try:
             # Navigate to LinkedIn search page for people
             search_url = f"https://www.linkedin.com/search/results/people/?keywords={search_term.replace(' ', '%20')}"
             self.driver.get(search_url)
-            time.sleep(5)  # Wait time for page to load
+            time.sleep(10)  # Wait time for page to load
 
             print(f"Searching for '{search_term}' on LinkedIn...")
+            print(
+                f"Will visit up to {num_profiles} profiles across up to {max_pages} pages of search results"
+            )
 
             # Create filename for this search
             filename = f"linkedin_profiles_{search_term.replace(' ', '_')}.csv"
 
-            # Take a screenshot to debug
-            screenshot_path = "search_page.png"
-            self.driver.save_screenshot(screenshot_path)
-            print(f"Saved screenshot to {screenshot_path}")
-
-            # Save page source for debugging
-            self.debug_page_source("search_page_source.html")
-            print("Saved page source for debugging")
-
-            # Try different XPath patterns for profile links
-            profile_links = []
-
-            # Pattern 1: Standard entity-result pattern
-            try:
-                links1 = self.driver.find_elements(
-                    By.XPATH, "//span[@class='entity-result__title-text']/a"
-                )
-                profile_links.extend(links1)
-                print(f"Found {len(links1)} links with pattern 1")
-            except Exception as e:
-                print(f"Error with pattern 1: {e}")
-
-            # Pattern 2: Alternative pattern for app-aware links
-            try:
-                links2 = self.driver.find_elements(
-                    By.XPATH,
-                    "//a[contains(@class, 'app-aware-link') and contains(@href, '/in/')]",
-                )
-                profile_links.extend(links2)
-                print(f"Found {len(links2)} links with pattern 2")
-            except Exception as e:
-                print(f"Error with pattern 2: {e}")
-
-            # Pattern 3: New pattern based on the provided HTML
-            try:
-                links3 = self.driver.find_elements(
-                    By.XPATH,
-                    "//a[contains(@class, 'qWdktykoofflQLeAqgrGCGVRzijLcViJI') and contains(@href, '/in/')]",
-                )
-                profile_links.extend(links3)
-                print(f"Found {len(links3)} links with pattern 3")
-            except Exception as e:
-                print(f"Error with pattern 3: {e}")
-
-            # Pattern 4: Another pattern from the provided HTML
-            try:
-                links4 = self.driver.find_elements(
-                    By.XPATH,
-                    "//span[contains(@class, 'eBNwISpkdUDmzjnfMDCWRdcdBzYMwLkYdI')]/a",
-                )
-                profile_links.extend(links4)
-                print(f"Found {len(links4)} links with pattern 4")
-            except Exception as e:
-                print(f"Error with pattern 4: {e}")
-
-            # Pattern 5: Try a more generic approach with CSS selectors
-            try:
-                links5 = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/in/']")
-                profile_links.extend(links5)
-                print(f"Found {len(links5)} links with pattern 5 (generic href)")
-            except Exception as e:
-                print(f"Error with pattern 5: {e}")
-
-            # Pattern 6: Try finding search result containers first
-            try:
-                result_containers = self.driver.find_elements(
-                    By.XPATH,
-                    "//li[contains(@class, 'reusable-search__result-container')]",
-                )
-                print(f"Found {len(result_containers)} result containers")
-
-                for container in result_containers:
-                    try:
-                        link = container.find_element(
-                            By.XPATH, ".//a[contains(@href, '/in/')]"
-                        )
-                        profile_links.append(link)
-                    except:
-                        pass
-                print(f"Found {len(profile_links)} links from result containers")
-            except Exception as e:
-                print(f"Error finding result containers: {e}")
-
-            # Extract the href attributes
-            profile_urls = []
-            for link in profile_links:
-                try:
-                    url = link.get_attribute("href")
-                    if url and "/in/" in url:
-                        profile_urls.append(url)
-                except Exception as e:
-                    print(f"Error extracting href: {e}")
-                    continue
-
-            # Remove duplicates
-            profile_urls = list(set(profile_urls))
-            print(f"Found {len(profile_urls)} unique profile URLs")
-
-            # Print the first few URLs for debugging
-            for i, url in enumerate(profile_urls[:3]):
-                print(f"URL {i + 1}: {url}")
-
-            # If no profiles found, try to extract information directly from search results
-            if len(profile_urls) == 0:
-                print(
-                    "No profile links found. Attempting to extract data directly from search results..."
-                )
-                self.extract_from_search_results()
-                # Save the data extracted from search results
-                self.save_to_csv(filename)
-
-                # If still no data, try a different approach
-                if not self.data:
-                    print(
-                        "Still no data found. Trying alternative extraction method..."
-                    )
-                    self.extract_from_search_results_alternative()
-                    self.save_to_csv(filename)
-                return
-
-            # Limit to the requested number of profiles
-            profile_urls = profile_urls[:num_profiles]
+            # Initialize counters
             profiles_visited = 0
+            current_page = 1
 
-            # Visit each profile and extract data
-            for url in profile_urls:
-                # Clean the URL to remove query parameters
-                clean_url = url.split("?")[0]
+            # Continue until we've visited enough profiles or reached max pages
+            while profiles_visited < num_profiles and current_page <= max_pages:
+                print(
+                    f"\n--- Processing search results page {current_page} of {max_pages} ---"
+                )
 
+                # Try different XPath patterns for profile links
+                profile_links = []
+
+                # Pattern 1: Standard entity-result pattern
                 try:
-                    # Store the current data length
-                    previous_data_length = len(self.data)
-
-                    self.scrape_profile(clean_url)
-                    profiles_visited += 1
-                    print(
-                        f"Successfully visited profile {profiles_visited} of {num_profiles}"
+                    links1 = self.driver.find_elements(
+                        By.XPATH, "//span[@class='entity-result__title-text']/a"
                     )
-
-                    # Save only the newly added data
-                    if len(self.data) > previous_data_length:
-                        # For the first profile, create a new file
-                        append_mode = profiles_visited > 1
-                        self.save_to_csv(filename, append=append_mode)
-                    else:
-                        print(f"Warning: No new data was added for profile {clean_url}")
-
-                    # Return to search results page
-                    self.driver.back()
-                    time.sleep(3)  # Wait for page to load
-
-                    # If we've visited the requested number of profiles, break
-                    if profiles_visited >= num_profiles:
-                        break
-
+                    profile_links.extend(links1)
+                    print(f"Found {len(links1)} links with pattern 1")
                 except Exception as e:
-                    print(f"Error scraping profile {clean_url}: {e}")
+                    print(f"Error with pattern 1: {e}")
 
-            print(f"Successfully visited {profiles_visited} profiles")
+                # Pattern 2: Alternative pattern for app-aware links
+                try:
+                    links2 = self.driver.find_elements(
+                        By.XPATH,
+                        "//a[contains(@class, 'app-aware-link') and contains(@href, '/in/')]",
+                    )
+                    profile_links.extend(links2)
+                    print(f"Found {len(links2)} links with pattern 2")
+                except Exception as e:
+                    print(f"Error with pattern 2: {e}")
+
+                # Pattern 3: New pattern based on the provided HTML
+                try:
+                    links3 = self.driver.find_elements(
+                        By.XPATH,
+                        "//a[contains(@class, 'qWdktykoofflQLeAqgrGCGVRzijLcViJI') and contains(@href, '/in/')]",
+                    )
+                    profile_links.extend(links3)
+                    print(f"Found {len(links3)} links with pattern 3")
+                except Exception as e:
+                    print(f"Error with pattern 3: {e}")
+
+                # Pattern 4: Another pattern from the provided HTML
+                try:
+                    links4 = self.driver.find_elements(
+                        By.XPATH,
+                        "//span[contains(@class, 'eBNwISpkdUDmzjnfMDCWRdcdBzYMwLkYdI')]/a",
+                    )
+                    profile_links.extend(links4)
+                    print(f"Found {len(links4)} links with pattern 4")
+                except Exception as e:
+                    print(f"Error with pattern 4: {e}")
+
+                # Pattern 5: Try a more generic approach with CSS selectors
+                try:
+                    links5 = self.driver.find_elements(
+                        By.CSS_SELECTOR, "a[href*='/in/']"
+                    )
+                    profile_links.extend(links5)
+                    print(f"Found {len(links5)} links with pattern 5 (generic href)")
+                except Exception as e:
+                    print(f"Error with pattern 5: {e}")
+
+                # Pattern 6: Try finding search result containers first
+                try:
+                    result_containers = self.driver.find_elements(
+                        By.XPATH,
+                        "//li[contains(@class, 'reusable-search__result-container')]",
+                    )
+                    print(f"Found {len(result_containers)} result containers")
+
+                    for container in result_containers:
+                        try:
+                            link = container.find_element(
+                                By.XPATH, ".//a[contains(@href, '/in/')]"
+                            )
+                            profile_links.append(link)
+                        except:
+                            pass
+                    print(f"Found {len(profile_links)} links from result containers")
+                except Exception as e:
+                    print(f"Error finding result containers: {e}")
+
+                # Extract the href attributes
+                profile_urls = []
+                for link in profile_links:
+                    try:
+                        url = link.get_attribute("href")
+                        if url and "/in/" in url:
+                            profile_urls.append(url)
+                    except Exception as e:
+                        print(f"Error extracting href: {e}")
+                        continue
+
+                # Remove duplicates
+                profile_urls = list(set(profile_urls))
+                print(
+                    f"Found {len(profile_urls)} unique profile URLs on page {current_page}"
+                )
+
+                # Print the first few URLs for debugging
+                for i, url in enumerate(profile_urls[:3]):
+                    print(f"URL {i + 1}: {url}")
+
+                # If no profiles found, try to extract information directly from search results
+                if len(profile_urls) == 0:
+                    print(
+                        "No profile links found. Attempting to extract data directly from search results..."
+                    )
+                    self.extract_from_search_results()
+                    # Save the data extracted from search results
+                    self.save_to_csv(filename, append=(profiles_visited > 0))
+
+                    # If still no data, try a different approach
+                    if not self.data:
+                        print(
+                            "Still no data found. Trying alternative extraction method..."
+                        )
+                        self.extract_from_search_results_alternative()
+                        self.save_to_csv(filename, append=(profiles_visited > 0))
+                else:
+                    # Calculate how many more profiles we need to visit
+                    profiles_remaining = num_profiles - profiles_visited
+
+                    # Limit to the number of profiles we still need
+                    profile_urls = profile_urls[:profiles_remaining]
+
+                    # Visit each profile and extract data
+                    for url in profile_urls:
+                        # Clean the URL to remove query parameters
+                        clean_url = url.split("?")[0]
+
+                        try:
+                            # Store the current data length
+                            previous_data_length = len(self.data)
+
+                            self.scrape_profile(clean_url)
+                            profiles_visited += 1
+                            print(
+                                f"Successfully visited profile {profiles_visited} of {num_profiles}"
+                            )
+
+                            # Save only the newly added data
+                            if len(self.data) > previous_data_length:
+                                # For the first profile, create a new file
+                                append_mode = profiles_visited > 1
+                                self.save_to_csv(filename, append=append_mode)
+                            else:
+                                print(
+                                    f"Warning: No new data was added for profile {clean_url}"
+                                )
+
+                            # Return to search results page
+                            self.driver.back()
+                            time.sleep(3)  # Wait for page to load
+
+                            # If we've visited the requested number of profiles, break
+                            if profiles_visited >= num_profiles:
+                                break
+
+                        except Exception as e:
+                            print(f"Error scraping profile {clean_url}: {e}")
+
+                # If we've visited enough profiles, break out of the loop
+                if profiles_visited >= num_profiles:
+                    print(
+                        f"Reached the target of {num_profiles} profiles. Stopping search."
+                    )
+                    break
+
+                # Check if we should move to the next page
+                if current_page < max_pages:
+                    # Try to find and click the next page button
+                    next_page_found = False
+
+                    # Try different patterns for the next button
+                    try:
+                        # Pattern 1: Standard next button
+                        next_button = self.driver.find_element(
+                            By.XPATH, "//button[@aria-label='Next']"
+                        )
+                        if next_button and next_button.is_enabled():
+                            print("Found 'Next' button with aria-label. Clicking...")
+                            next_button.click()
+                            next_page_found = True
+                            time.sleep(5)  # Wait for page to load
+                    except Exception as e:
+                        print(f"Next button pattern 1 not found: {e}")
+
+                    # Pattern 2: Pagination button with class
+                    if not next_page_found:
+                        try:
+                            next_button = self.driver.find_element(
+                                By.XPATH,
+                                "//button[contains(@class, 'artdeco-pagination__button--next')]",
+                            )
+                            if next_button and next_button.is_enabled():
+                                print("Found 'Next' button with class. Clicking...")
+                                next_button.click()
+                                next_page_found = True
+                                time.sleep(5)  # Wait for page to load
+                        except Exception as e:
+                            print(f"Next button pattern 2 not found: {e}")
+
+                    # Pattern 3: Try to find by text content
+                    if not next_page_found:
+                        try:
+                            next_button = self.driver.find_element(
+                                By.XPATH,
+                                "//button[contains(text(), 'Next') or .//span[contains(text(), 'Next')]]",
+                            )
+                            if next_button and next_button.is_enabled():
+                                print(
+                                    "Found 'Next' button by text content. Clicking..."
+                                )
+                                next_button.click()
+                                next_page_found = True
+                                time.sleep(5)  # Wait for page to load
+                        except Exception as e:
+                            print(f"Next button pattern 3 not found: {e}")
+
+                    # Pattern 4: Try to find by icon
+                    if not next_page_found:
+                        try:
+                            next_button = self.driver.find_element(
+                                By.XPATH,
+                                "//button[.//li-icon[@type='chevron-right-icon']]",
+                            )
+                            if next_button and next_button.is_enabled():
+                                print("Found 'Next' button by icon. Clicking...")
+                                next_button.click()
+                                next_page_found = True
+                                time.sleep(5)  # Wait for page to load
+                        except Exception as e:
+                            print(f"Next button pattern 4 not found: {e}")
+
+                    if next_page_found:
+                        current_page += 1
+                        print(f"Successfully navigated to page {current_page}")
+                    else:
+                        print("Could not find a 'Next' button. Ending search.")
+                        break
+                else:
+                    print(
+                        f"Reached maximum number of pages ({max_pages}). Stopping search."
+                    )
+                    break
+
+            print(
+                f"Successfully visited {profiles_visited} profiles across {current_page} pages"
+            )
 
             # Final save to ensure all data is saved
             if self.data:
@@ -733,6 +1083,9 @@ class LinkedInScraper:
 
         except Exception as e:
             print(f"Error during profile visits: {e}")
+            # Save any data collected so far
+            if self.data:
+                self.save_to_csv(filename)
 
     def extract_from_search_results_alternative(self):
         """Alternative method to extract profile information from search results page."""
@@ -775,6 +1128,42 @@ class LinkedInScraper:
                     if len(text_elements) > 2:
                         location = text_elements[2].text.strip() or "N/A"
 
+                    # Store the current profile name for use in RocketReach lookup
+                    self.current_profile_name = name
+
+                    # If we have a profile URL, visit the profile to get contact info
+                    linkedin_url = None
+
+                    if profile_url:
+                        # Store current URL to return to search results
+                        current_url = self.driver.current_url
+
+                        # Visit profile to get contact info
+                        try:
+                            self.driver.get(profile_url)
+                            time.sleep(3)
+                            linkedin_url = self.extract_contact_info_url(profile_url)
+
+                            # Return to search results
+                            self.driver.get(current_url)
+                            time.sleep(2)
+                        except Exception as e:
+                            print(f"Error getting contact info for {profile_url}: {e}")
+                            # Make sure we return to search results
+                            self.driver.get(current_url)
+                            time.sleep(2)
+
+                    # Look up additional information from RocketReach
+                    rr_data = None
+                    if self.rr_client:
+                        # Use contact info URL if available, otherwise use profile URL
+                        lookup_url = linkedin_url if linkedin_url else profile_url
+                        if lookup_url:
+                            rr_data = self.lookup_rocketreach(lookup_url)
+
+                    # Convert RocketReach data to JSON string for storage
+                    additional_info = json.dumps(rr_data) if rr_data else "N/A"
+
                     # Add to data if we have at least a name and profile URL
                     if name != "N/A" and profile_url:
                         profile_data = {
@@ -784,12 +1173,15 @@ class LinkedInScraper:
                             "About": "N/A",
                             "Current Position": headline,
                             "Profile URL": profile_url,
+                            "Contact Info URL": linkedin_url if linkedin_url else "N/A",
                             "Skills": "N/A",
                             "Investments": "N/A",
+                            "Additional Info": additional_info,  # Add RocketReach data
                         }
                         self.data.append(profile_data)
                         print(f"Extracted data for {name}")
-                except Exception:
+                except Exception as e:
+                    print(f"Error processing list item: {e}")
                     continue
 
             print(f"Alternative extraction found {len(self.data)} profiles")
@@ -857,6 +1249,9 @@ class LinkedInScraper:
                     except:
                         pass
 
+                # Store the current profile name for use in RocketReach lookup
+                self.current_profile_name = name
+
                 # Headline
                 try:
                     headline_elem = result_item.find_element(
@@ -891,6 +1286,39 @@ class LinkedInScraper:
                     except:
                         pass
 
+                # If we have a profile URL, visit the profile to get contact info
+                linkedin_url = None
+
+                if profile_url != "N/A":
+                    # Store current URL to return to search results
+                    current_url = self.driver.current_url
+
+                    # Visit profile to get contact info
+                    try:
+                        self.driver.get(profile_url)
+                        time.sleep(3)
+                        linkedin_url = self.extract_contact_info_url(profile_url)
+
+                        # Return to search results
+                        self.driver.get(current_url)
+                        time.sleep(2)
+                    except Exception as e:
+                        print(f"Error getting contact info for {profile_url}: {e}")
+                        # Make sure we return to search results
+                        self.driver.get(current_url)
+                        time.sleep(2)
+
+                # Look up additional information from RocketReach if we have a profile URL
+                rr_data = None
+                if self.rr_client:
+                    # Use contact info URL if available, otherwise use profile URL
+                    lookup_url = linkedin_url if linkedin_url else profile_url
+                    if lookup_url != "N/A":
+                        rr_data = self.lookup_rocketreach(lookup_url)
+
+                # Convert RocketReach data to JSON string for storage
+                additional_info = json.dumps(rr_data) if rr_data else "N/A"
+
                 # Add to data
                 if name != "N/A":
                     profile_data = {
@@ -900,8 +1328,10 @@ class LinkedInScraper:
                         "About": "N/A",  # Not available in search results
                         "Current Position": headline,  # Using headline as current position
                         "Profile URL": profile_url,
+                        "Contact Info URL": linkedin_url if linkedin_url else "N/A",
                         "Skills": "N/A",  # Not available in search results
                         "Investments": "N/A",  # Not available in search results
+                        "Additional Info": additional_info,  # Add RocketReach data
                     }
                     self.data.append(profile_data)
                     print(f"Extracted data for {name}")
@@ -910,6 +1340,21 @@ class LinkedInScraper:
 
         except Exception as e:
             print(f"Error extracting from search results: {e}")
+
+    def visit_first_profile(self, search_term):
+        """
+        Search for people with the given search term and visit only the first profile found.
+        This is a simplified version of visit_profiles for backward compatibility.
+
+        Args:
+            search_term: The keyword to search for on LinkedIn
+        """
+        print("Using visit_first_profile method (simplified version)")
+        self.visit_profiles(search_term, num_profiles=1, max_pages=1)
+
+        # For backward compatibility, save to the original filename
+        if self.data:
+            self.save_to_csv("angel_investor_profile.csv")
 
 
 if __name__ == "__main__":
