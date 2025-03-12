@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Example script to search for founders on LinkedIn and extract their profile information.
+Script to search for Angel Investors on LinkedIn and extract their profile information.
+This simplified version only visits one profile.
 """
 
 from linkedin_scraper import LinkedInScraper
@@ -15,23 +16,24 @@ def main():
     scraper = LinkedInScraper(email, password)
 
     # Define search parameters
-    search_term = "founder startup"  # Search for founders of startups
-    num_pages = 2  # Limit to 2 pages for this example
+    search_term = "angel investor"  # Search for angel investors
 
     print(f"\nSearching for '{search_term}' on LinkedIn...")
-    print(f"Will scrape up to {num_pages} pages of search results.")
+    print("Will visit only the first profile found.")
     print("This may take a few minutes. Please wait...\n")
 
     try:
-        # Run the complete scraping process
+        # Run the simplified scraping process
         scraper.setup_driver()
         if scraper.login():
-            scraper.search_people(search_term, num_pages)
-            scraper.save_to_csv("founders_data.csv")
+            scraper.visit_first_profile(search_term)
+            scraper.save_to_csv("angel_investor_profile.csv")
         scraper.close()
 
         print("\nScraping completed successfully!")
-        print("Check 'founders_data.csv' for the extracted profile information.")
+        print(
+            "Check 'angel_investor_profile.csv' for the extracted profile information."
+        )
 
     except Exception as e:
         print(f"\nAn error occurred: {e}")
