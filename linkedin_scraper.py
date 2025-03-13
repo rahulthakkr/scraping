@@ -1,4 +1,3 @@
-import json
 import os
 import time
 
@@ -74,155 +73,6 @@ class LinkedInScraper:
         except Exception as e:
             print(f"Error during login: {e}")
             return False
-
-    def extract_from_search_results(self):
-        """Extract profile information directly from search results page."""
-        try:
-            # Use the existing_names set defined in visit_profiles, or create an empty set if it doesn't exist
-            if not hasattr(self, "existing_names"):
-                self.existing_names = set()
-
-            # Find all search result items
-            result_items = self.driver.find_elements(
-                By.XPATH, "//li[contains(@class, 'sPyyoaQOsCzibiZXNZiIPsQlDbqJU')]"
-            )
-
-            if not result_items:
-                result_items = self.driver.find_elements(
-                    By.XPATH,
-                    "//li[contains(@class, 'reusable-search__result-container')]",
-                )
-
-            print(f"Found {len(result_items)} search result items")
-
-            for item in result_items:
-                try:
-                    # Extract data from each result item
-                    name = "N/A"
-                    headline = "N/A"
-                    location = "N/A"
-                    profile_url = "N/A"
-
-                    # Name
-                    try:
-                        name_elem = item.find_element(
-                            By.XPATH,
-                            ".//span[contains(@class, 'eBNwISpkdUDmzjnfMDCWRdcdBzYMwLkYdI')]/a",
-                        )
-                        name = name_elem.text.strip()
-                        profile_url = name_elem.get_attribute("href")
-                    except:
-                        try:
-                            name_elem = item.find_element(
-                                By.XPATH,
-                                ".//span[contains(@class, 'entity-result__title-text')]/a",
-                            )
-                            name = name_elem.text.strip()
-                            profile_url = name_elem.get_attribute("href")
-                        except:
-                            pass
-
-                    # Store the current profile name for use in RocketReach lookup
-                    self.current_profile_name = name
-
-                    # Normalize the name for comparison
-                    normalized_name = name.strip() if name else "N/A"
-
-                    # Skip if name is in existing_names - do case-insensitive comparison for reliability
-                    if any(
-                        normalized_name.lower() == existing.lower()
-                        for existing in self.existing_names
-                    ):
-                        print(f"Skipping {normalized_name} - already in CSV file")
-                        continue
-
-                    # Headline
-                    try:
-                        headline_elem = item.find_element(
-                            By.XPATH,
-                            ".//div[contains(@class, 'FBhjEoyAzmTuyITebnedTzGaSyYHjnEDsjUEY')]",
-                        )
-                        headline = headline_elem.text.strip()
-                    except:
-                        try:
-                            headline_elem = item.find_element(
-                                By.XPATH,
-                                ".//div[contains(@class, 'entity-result__primary-subtitle')]",
-                            )
-                            headline = headline_elem.text.strip()
-                        except:
-                            pass
-
-                    # Location
-                    try:
-                        location_elem = item.find_element(
-                            By.XPATH,
-                            ".//div[contains(@class, 'AZoaSfcPFEqGecZFTogUQbRlYXHDrBLqvghsY')]",
-                        )
-                        location = location_elem.text.strip()
-                    except:
-                        try:
-                            location_elem = item.find_element(
-                                By.XPATH,
-                                ".//div[contains(@class, 'entity-result__secondary-subtitle')]",
-                            )
-                            location = location_elem.text.strip()
-                        except:
-                            pass
-
-                    # If we have a profile URL, visit the profile to get contact info
-                    linkedin_url = None
-
-                    if profile_url != "N/A":
-                        # Store current URL to return to search results
-                        current_url = self.driver.current_url
-
-                        # Visit profile to get contact info
-                        try:
-                            self.driver.get(profile_url)
-                            time.sleep(3)
-                            linkedin_url = self.extract_contact_info_url(profile_url)
-
-                            # Return to search results
-                            self.driver.get(current_url)
-                            time.sleep(2)
-                        except Exception as e:
-                            print(f"Error getting contact info for {profile_url}: {e}")
-                            # Make sure we return to search results
-                            self.driver.get(current_url)
-                            time.sleep(2)
-
-                    # Look up additional information from RocketReach if we have a profile URL
-                    rr_data = None
-                    if self.rr_client:
-                        # Use contact info URL if available, otherwise use profile URL
-                        lookup_url = linkedin_url if linkedin_url else profile_url
-                        if lookup_url != "N/A":
-                            rr_data = self.lookup_rocketreach(lookup_url)
-
-                    # Convert RocketReach data to JSON string for storage
-                    additional_info = json.dumps(rr_data) if rr_data else "N/A"
-
-                    # Add to data
-                    if name != "N/A":
-                        profile_data = {
-                            "Name": name,
-                            "Headline": headline,
-                            "Location": location,
-                            "About": "N/A",  # Not available in search results
-                            "Current Position": headline,  # Using headline as current position
-                            "Profile URL": profile_url,
-                            "Contact Info URL": linkedin_url if linkedin_url else "N/A",
-                            "Additional Info": additional_info,  # Add RocketReach data
-                        }
-                        self.data.append(profile_data)
-                        print(f"Extracted data for {name}")
-
-                except Exception as e:
-                    print(f"Error extracting data from search result item: {e}")
-
-        except Exception as e:
-            print(f"Error extracting from search results: {e}")
 
     def lookup_rocketreach(self, linkedin_url):
         """
@@ -483,9 +333,6 @@ class LinkedInScraper:
                 except:
                     continue
 
-            # Extract angel investor specific information
-            self.extract_investor_info(profile_url)
-
             # Look up additional information from RocketReach
             rr_data = None
             if self.rr_client:
@@ -493,8 +340,22 @@ class LinkedInScraper:
                 lookup_url = linkedin_url if linkedin_url else profile_url
                 rr_data = self.lookup_rocketreach(lookup_url)
 
+            try:
+                valid_emails = [
+                    email["email"]
+                    for email in rr_data["emails"]
+                    if email["smtp_valid"] == "valid"
+                    or email["smtp_valid"] == "inconclusive"
+                ]
+                current_role = rr_data.get("current_role", "N/A")
+                current_employer = rr_data.get("current_employer", "N/A")
+            except:
+                valid_emails = []
+                current_role = "N/A"
+                current_employer = "N/A"
+
             # Convert RocketReach data to JSON string for storage
-            additional_info = json.dumps(rr_data) if rr_data else "N/A"
+            additional_info = rr_data or "N/A"
 
             # Store the extracted data
             profile_data = {
@@ -502,9 +363,10 @@ class LinkedInScraper:
                 "Headline": headline,
                 "Location": location,
                 "About": about,
-                "Current Position": current_position,
-                "Profile URL": profile_url,
-                "Contact Info URL": linkedin_url if linkedin_url else "N/A",
+                "Valid Emails": valid_emails,
+                "Current Position": current_role,
+                "Current Employer": current_employer,
+                "Profile URL": linkedin_url if linkedin_url else "N/A",
                 "Additional Info": additional_info,  # Add RocketReach data
             }
 
@@ -513,86 +375,6 @@ class LinkedInScraper:
 
         except Exception as e:
             print(f"Error scraping profile {profile_url}: {e}")
-
-    def extract_investor_info(self, profile_url):
-        """Extract angel investor specific information like skills and investments."""
-        try:
-            # Check if we're already on the profile page, if not navigate to it
-            if profile_url not in self.driver.current_url:
-                self.driver.get(profile_url)
-                time.sleep(3)
-
-            # Extract skills
-            skills = []
-            try:
-                # Try to find the skills section
-                # First check if we need to click to see skills
-                skills_buttons = self.driver.find_elements(
-                    By.XPATH, "//a[contains(@href, '/details/skills/')]"
-                )
-                if skills_buttons:
-                    # Click to view skills
-                    skills_buttons[0].click()
-                    time.sleep(2)
-
-                    # Extract skills from the modal
-                    skill_elements = self.driver.find_elements(
-                        By.XPATH,
-                        "//div[contains(@class, 'skill-category-entity__name')]",
-                    )
-                    for skill in skill_elements:
-                        skills.append(skill.text.strip())
-
-                    # Close the modal
-                    close_button = self.driver.find_element(
-                        By.XPATH, "//button[@aria-label='Dismiss']"
-                    )
-                    close_button.click()
-                    time.sleep(1)
-                else:
-                    # Try to extract skills directly from the profile
-                    skill_elements = self.driver.find_elements(
-                        By.XPATH,
-                        "//span[contains(@class, 'pv-skill-category-entity__name-text')]",
-                    )
-                    for skill in skill_elements:
-                        skills.append(skill.text.strip())
-            except Exception as e:
-                print(f"Error extracting skills: {e}")
-
-            # Extract investment information
-            investments = []
-            try:
-                # Look for sections that might contain investment information
-                sections = self.driver.find_elements(
-                    By.XPATH, "//section[contains(@class, 'pv-profile-section')]"
-                )
-
-                for section in sections:
-                    section_title = (
-                        section.find_element(By.XPATH, ".//h2").text.strip().lower()
-                    )
-                    if (
-                        "investment" in section_title
-                        or "venture" in section_title
-                        or "portfolio" in section_title
-                    ):
-                        # Extract investment items
-                        investment_items = section.find_elements(By.XPATH, ".//li")
-                        for item in investment_items:
-                            investments.append(item.text.strip())
-            except Exception as e:
-                print(f"Error extracting investments: {e}")
-
-            # Add to profile data
-            if self.data and self.data[-1]["Profile URL"] == profile_url:
-                self.data[-1]["Skills"] = ", ".join(skills) if skills else "N/A"
-                self.data[-1]["Investments"] = (
-                    ", ".join(investments) if investments else "N/A"
-                )
-
-        except Exception as e:
-            print(f"Error extracting investor info: {e}")
 
     def save_to_csv(self, filename="linkedin_profiles.csv", append=False):
         """Save the scraped data to a CSV file.
@@ -816,22 +598,7 @@ class LinkedInScraper:
                 #     print(f"URL {i + 1}: {url}")
 
                 # If no profiles found, try to extract information directly from search results
-                if len(profile_urls) == 0:
-                    print(
-                        "No profile links found. Attempting to extract data directly from search results..."
-                    )
-                    self.extract_from_search_results()
-                    # Save the data extracted from search results
-                    self.save_to_csv(filename, append=(profiles_visited > 0))
-
-                    # If still no data, try a different approach
-                    if not self.data:
-                        print(
-                            "Still no data found. Trying alternative extraction method..."
-                        )
-                        self.extract_from_search_results_alternative()
-                        self.save_to_csv(filename, append=(profiles_visited > 0))
-                else:
+                if len(profile_urls) > 0:
                     # Calculate how many more profiles we need to visit
                     profiles_remaining = num_profiles - profiles_visited
 
