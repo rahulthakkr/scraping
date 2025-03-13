@@ -30,10 +30,18 @@ class LinkedInScraper:
                 self.rr_client = None
 
     def setup_driver(self):
-        """Set up the Safari WebDriver."""
-        # Safari doesn't use options like Chrome does
-        self.driver = webdriver.Safari()
-        self.driver.maximize_window()
+        """Set up the Chrome WebDriver."""
+        from selenium.webdriver.chrome.service import Service
+        from webdriver_manager.chrome import ChromeDriverManager
+        from selenium.webdriver.chrome.options import Options
+        
+        # Set up Chrome options
+        chrome_options = Options()
+        chrome_options.add_argument("--start-maximized")  # Start maximized
+        chrome_options.add_argument("--disable-notifications")  # Disable notifications
+        
+        # Initialize Chrome WebDriver with options
+        self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
         self.wait = WebDriverWait(self.driver, 10)
 
     def login(self):

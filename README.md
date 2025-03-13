@@ -19,7 +19,7 @@ A Python script that automates searching for LinkedIn profiles based on specific
 ## Requirements
 
 - Python 3.6+
-- Chrome browser installed
+- Chrome browser installed (see chrome_setup_guide.md for setup instructions)
 - LinkedIn account
 
 ## Installation
@@ -28,7 +28,7 @@ A Python script that automates searching for LinkedIn profiles based on specific
 2. Install the required packages:
 
 ```bash
-pip install selenium webdriver-manager pandas
+pip install -r requirements.txt
 ```
 
 ## Usage
