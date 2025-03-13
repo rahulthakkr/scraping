@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-"""
-Script to search for Angel Investors on LinkedIn and extract their profile information.
-This version can visit multiple profiles across multiple pages of search results.
-It also enriches profile data with information from RocketReach.
-"""
-
 import os
 
 from linkedin_scraper import LinkedInScraper
@@ -42,9 +35,7 @@ def main():
     scraper = LinkedInScraper(email, password, rr_api_key=rr_api_key)
 
     # Define search parameters
-    search_term = (
-        input("Enter search term (default: 'angel investor'): ") or "angel investor"
-    )
+    search_term = input("Enter search term: ")
 
     print(f"\nSearching for '{search_term}' on LinkedIn...")
     print(
