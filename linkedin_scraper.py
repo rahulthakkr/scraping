@@ -8,6 +8,15 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 
+SUPPORTED_LOCATIONS = {
+    "Dubai": 106204383,
+    "United States": 103644278,
+    "United Kingdom": 101165590,
+    "Canada": 101174742,
+    "Australia": 101452733,
+    "India": 102713980,
+}
+
 
 class LinkedInScraper:
     def __init__(self, email, password, rr_api_key=None):
@@ -31,17 +40,19 @@ class LinkedInScraper:
 
     def setup_driver(self):
         """Set up the Chrome WebDriver."""
+        from selenium.webdriver.chrome.options import Options
         from selenium.webdriver.chrome.service import Service
         from webdriver_manager.chrome import ChromeDriverManager
-        from selenium.webdriver.chrome.options import Options
-        
+
         # Set up Chrome options
         chrome_options = Options()
         chrome_options.add_argument("--start-maximized")  # Start maximized
         chrome_options.add_argument("--disable-notifications")  # Disable notifications
-        
+
         # Initialize Chrome WebDriver with options
-        self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+        self.driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()), options=chrome_options
+        )
         self.wait = WebDriverWait(self.driver, 10)
 
     def login(self):
@@ -451,7 +462,7 @@ class LinkedInScraper:
             self.driver.quit()
             print("WebDriver closed.")
 
-    def visit_profiles(self, search_term, num_profiles=5):
+    def visit_profiles(self, search_term, num_profiles=5, location=None):
         """
         Search for people with the given search term and visit up to the requested number of profiles.
         Skip profiles that are already in the CSV file. Will automatically navigate to next pages
@@ -460,14 +471,34 @@ class LinkedInScraper:
         Args:
             search_term: The keyword to search for on LinkedIn
             num_profiles: Maximum number of profiles to visit
+            location: The location to search for
         """
         try:
-            # Navigate to LinkedIn search page for people
-            search_url = f"https://www.linkedin.com/search/results/people/?keywords={search_term.replace(' ', '%20')}"
+            #  Build the search URL with optional location filter
+            base_url = "https://www.linkedin.com/search/results/people/?keywords="
+            search_url = f"{base_url}{search_term.replace(' ', '%20')}"
+
+            # Add location filter if specified
+            if location:
+                location_id = SUPPORTED_LOCATIONS.get(location)
+                assert location_id, f"Location {location} not supported"
+                search_url += f"&geoUrn=%5B%22{location_id}%22%5D"
+                print(f"Adding location filter: {location}")
+
+                # Create filename with location included
+                location_slug = location.replace(" ", "_")
+                filename = f"linkedin_profiles_{search_term.replace(' ', '_')}_{location_slug}.csv"
+            else:
+                # Use original filename format if no location specified
+                filename = f"linkedin_profiles_{search_term.replace(' ', '_')}.csv"
+
             self.driver.get(search_url)
             time.sleep(10)  # Wait time for page to load
 
-            print(f"Searching for '{search_term}' on LinkedIn...")
+            print(
+                f"Searching for '{search_term}' on LinkedIn"
+                + (f" in {location}" if location else "")
+            )
             print(
                 f"Will visit up to {num_profiles} unique profiles, automatically navigating through pages as needed"
             )

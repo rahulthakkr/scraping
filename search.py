@@ -36,6 +36,7 @@ def main():
 
     # Define search parameters
     search_term = input("Enter search term: ")
+    location = input("Enter location (optional): ") or None
 
     print(f"\nSearching for '{search_term}' on LinkedIn...")
     print(
@@ -50,7 +51,9 @@ def main():
         scraper.setup_driver()
         if scraper.login():
             # Use the enhanced visit_profiles method (automatically handles pagination)
-            scraper.visit_profiles(search_term, num_profiles=num_profiles)
+            scraper.visit_profiles(
+                search_term, location=location, num_profiles=num_profiles
+            )
         scraper.close()
 
         print("\nScraping completed successfully!")
