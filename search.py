@@ -38,6 +38,8 @@ def main():
     search_term = input("Enter search term: ")
     location = input("Enter location (optional): ") or None
 
+    search_term = search_term.strip().lower()
+
     print(f"\nSearching for '{search_term}' on LinkedIn...")
     print(
         f"Will visit up to {num_profiles} profiles, automatically navigating through pages as needed."
