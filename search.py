@@ -37,6 +37,8 @@ def main():
     # Define search parameters
     search_term = input("Enter search term: ")
     location = input("Enter location (optional): ") or None
+    current_company = input("Enter current company (optional): ") or None
+    past_company = input("Enter past company (optional): ") or None
 
     search_term = search_term.strip().lower()
 
@@ -54,7 +56,11 @@ def main():
         if scraper.login():
             # Use the enhanced visit_profiles method (automatically handles pagination)
             scraper.visit_profiles(
-                search_term, location=location, num_profiles=num_profiles
+                search_term,
+                location=location,
+                num_profiles=num_profiles,
+                current_company=current_company,
+                past_company=past_company,
             )
         scraper.close()
 

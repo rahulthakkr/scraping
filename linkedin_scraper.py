@@ -18,6 +18,14 @@ SUPPORTED_LOCATIONS = {
     "london": 90009496,
 }
 
+SUPPORTED_COMPANIES = {
+    "google": "1441",
+    "meta": "10667",
+    "amazon": "1586",
+    "apple": "162479",
+    "microsoft": "1035",
+}
+
 
 class LinkedInScraper:
     def __init__(self, email, password, rr_api_key=None):
@@ -363,7 +371,14 @@ class LinkedInScraper:
             self.driver.quit()
             print("WebDriver closed.")
 
-    def visit_profiles(self, search_term, num_profiles=5, location=None):
+    def visit_profiles(
+        self,
+        search_term,
+        num_profiles=5,
+        location=None,
+        current_company=None,
+        past_company=None,
+    ):
         """
         Search for people with the given search term and visit up to the requested number of profiles.
         Skip profiles that are already in the CSV file. Will automatically navigate to next pages
@@ -388,6 +403,21 @@ class LinkedInScraper:
                 search_url += f"&geoUrn=%5B%22{location_id}%22%5D"
                 print(f"Adding location filter: {location}")
 
+            if current_company:
+                current_company_id = SUPPORTED_COMPANIES.get(
+                    current_company.lower().replace(" ", "_")
+                )
+                assert current_company_id, f"Company {current_company} not supported"
+                search_url += f"&currentCompany=%5B%22{current_company_id}%22%5D"
+                print(f"Adding current company filter: {current_company}")
+
+            if past_company:
+                past_company_id = SUPPORTED_COMPANIES.get(
+                    past_company.lower().replace(" ", "_")
+                )
+                assert past_company_id, f"Company {past_company} not supported"
+                search_url += f"&pastCompany=%5B%22{past_company_id}%22%5D"
+                print(f"Adding past company filter: {past_company}")
             print(
                 f"Searching for '{search_term}' on LinkedIn"
                 + (f" in {location}" if location else "")
@@ -425,14 +455,20 @@ class LinkedInScraper:
                 print(f"\n--- Fetching profiles from page {page_number} ---")
 
                 time.sleep(5)  # Wait time for page to load
-                # Try different XPath patterns for profile links
-                profile_links = []
 
                 # finding the pattern for the profile links
                 profile_links = self.driver.find_elements(
                     By.CSS_SELECTOR,
                     'a[href*="linkedin.com/in/"][data-test-app-aware-link]',
                 )
+
+                if (
+                    len(profile_links) == 0
+                ):  # If the current page has no profiles left then no point in checking for the next page.
+                    print(f"No profiles found on page {page_number}. Exiting.")
+                    self.close()
+                    return
+
                 profile_links = [
                     link.get_attribute("href")
                     for link in profile_links
@@ -445,13 +481,6 @@ class LinkedInScraper:
                 ]
 
                 profile_links = set(profile_links)
-
-                if (
-                    len(profile_links) == 0
-                ):  # If the current page has no profiles left then no point in checking for the next page.
-                    print("No profiles found on the first page. Exiting.")
-                    self.close()
-                    return
 
                 profile_links = [
                     link for link in profile_links if link not in self.existing_profiles
