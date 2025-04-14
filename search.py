@@ -1,9 +1,14 @@
 import os
 
+from dotenv import load_dotenv
+
 from linkedin_scraper import LinkedInScraper
 
 
 def main():
+    # Load environment variables
+    load_dotenv()
+
     # Replace with your LinkedIn credentials
     email = os.getenv("linkedin_email")
     password = os.getenv("linkedin_password")
@@ -13,14 +18,24 @@ def main():
         email = input("Enter your LinkedIn email: ")
     if password is None:
         password = input("Enter your LinkedIn password: ")
-    if rr_api_key is None:
-        rr_api_key = input("Enter your RocketReach API key (press Enter to skip): ")
 
-    if not rr_api_key:
-        print(
-            "No RocketReach API key provided. Profiles will not be enriched with additional data."
-        )
-        rr_api_key = None
+    # Ask user to choose between API and browser methods
+    rr_method = input(
+        "Choose RocketReach method (1 for API, 2 for Browser, default: API): "
+    ).strip()
+    use_api = rr_method != "2"  # Default to API unless browser option is chosen
+
+    if use_api:
+        print("Using RocketReach API for lookups")
+        if rr_api_key is None:
+            rr_api_key = input("Enter your RocketReach API key: ")
+        if not rr_api_key:
+            print(
+                "No RocketReach API key provided. Will fall back to browser method if API fails."
+            )
+    else:
+        print("Using RocketReach Browser automation for lookups")
+        rr_api_key = None  # Set to None to force browser method
 
     # Get user input for number of profiles
     try:
@@ -34,6 +49,10 @@ def main():
     # Initialize the scraper with RocketReach API key
     scraper = LinkedInScraper(email, password, rr_api_key=rr_api_key)
 
+    # If browser method is selected, force fallback mode
+    if not use_api:
+        scraper.use_browser_fallback = True
+
     # Define search parameters
     search_term = input("Enter search term: ")
     location = input("Enter location (optional): ") or None
@@ -46,8 +65,10 @@ def main():
     print(
         f"Will visit up to {num_profiles} profiles, automatically navigating through pages as needed."
     )
-    if rr_api_key:
-        print("Profiles will be enriched with RocketReach data.")
+    if use_api and rr_api_key:
+        print("Profiles will be enriched with RocketReach API data.")
+    else:
+        print("Profiles will be enriched with RocketReach browser automation data.")
     print("This may take a few minutes. Please wait...\n")
 
     try:

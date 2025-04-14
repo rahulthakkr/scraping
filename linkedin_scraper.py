@@ -8,6 +8,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 
+from rocketreach_browser import RocketReachBrowser
+
 SUPPORTED_LOCATIONS = {
     "dubai": 106204383,
     "united_states": 103644278,
@@ -37,6 +39,8 @@ class LinkedInScraper:
         self.rr_api_key = rr_api_key
         self.rr_client = None
         self.current_profile_name = "N/A"  # Initialize current profile name
+        self.rr_browser = None  # Initialize RocketReach browser
+        self.use_browser_fallback = False  # Flag to use browser fallback instead of API
 
         # Initialize RocketReach client if API key is provided
         if self.rr_api_key:
@@ -46,6 +50,9 @@ class LinkedInScraper:
             except Exception as e:
                 print(f"Error initializing RocketReach client: {e}")
                 self.rr_client = None
+                # Set flag to use browser fallback
+                self.use_browser_fallback = True
+                print("Will use browser-based RocketReach lookup as fallback")
 
     def setup_driver(self):
         """Set up the Chrome WebDriver."""
@@ -112,9 +119,14 @@ class LinkedInScraper:
         Returns:
             Dictionary with RocketReach data or None if lookup failed
         """
+        # First check if we should use browser-based lookup (API exhausted or not available)
+        if self.use_browser_fallback:
+            return self.lookup_rocketreach_browser(linkedin_url)
+
         if not self.rr_client:
             print("RocketReach client not initialized. Skipping lookup.")
-            return None
+            # Try browser-based lookup as fallback
+            return self.lookup_rocketreach_browser(linkedin_url)
 
         try:
             # Perform the lookup
@@ -125,6 +137,15 @@ class LinkedInScraper:
                 return lookup_result.person.to_dict()
             else:
                 print(f"No RocketReach data found for {linkedin_url}")
+
+                # Check for API credits exhausted error
+                if (
+                    hasattr(lookup_result, "error")
+                    and "credits" in str(lookup_result.error).lower()
+                ):
+                    print("API credits exhausted. Switching to browser-based lookup.")
+                    self.use_browser_fallback = True
+                    return self.lookup_rocketreach_browser(linkedin_url)
 
                 # Try an alternative approach - lookup by name if available
                 if (
@@ -144,14 +165,67 @@ class LinkedInScraper:
                             print(f"Found person by name: {name_lookup.people[0]}")
                             return name_lookup.people[0].to_dict()
                     except Exception as e:
+                        if "credits" in str(e).lower():
+                            print(
+                                "API credits exhausted. Switching to browser-based lookup."
+                            )
+                            self.use_browser_fallback = True
+                            return self.lookup_rocketreach_browser(linkedin_url)
                         print(f"Error looking up by name: {e}")
                         return {}
 
                 return {}
+        except Exception as e:
+            if "credits" in str(e).lower():
+                print("API credits exhausted. Switching to browser-based lookup.")
+                self.use_browser_fallback = True
+                return self.lookup_rocketreach_browser(linkedin_url)
+            print(f"Error looking up on RocketReach: {e}")
+            return {}
+
+    def lookup_rocketreach_browser(self, linkedin_url):
+        """
+        Look up a LinkedIn profile on RocketReach using browser automation.
+        This is used as a fallback when API credits are exhausted.
+
+        Args:
+            linkedin_url: The LinkedIn profile URL
+
+        Returns:
+            Dictionary with RocketReach data or empty dict if lookup failed
+        """
+        try:
+            # Initialize the RocketReach browser if not already done
+            if not self.rr_browser:
+                print("Initializing RocketReach browser automation...")
+                self.rr_browser = RocketReachBrowser()
+                self.rr_browser.setup_driver()
+
+                # Try to login
+                if not self.rr_browser.login():
+                    print(
+                        "Failed to login to RocketReach via browser. Cannot perform lookup."
+                    )
+                    return {}
+
+            # Search for the LinkedIn URL on RocketReach
+            print(
+                f"Searching for LinkedIn URL on RocketReach via browser: {linkedin_url}"
+            )
+            profile_data = self.rr_browser.search_by_linkedin_url(linkedin_url)
+
+            if profile_data:
+                print(
+                    f"Successfully found profile via browser: {profile_data.get('name', 'Unknown')}"
+                )
+                return profile_data
+            else:
+                print(f"Could not find profile via browser for: {linkedin_url}")
+                return {}
 
         except Exception as e:
-            print(f"Error looking up profile on RocketReach: {e}")
-            return None
+            print(f"Error during browser-based RocketReach lookup: {e}")
+            return {}
 
     def extract_contact_info_url(self, profile_url):
         """
@@ -366,10 +440,12 @@ class LinkedInScraper:
             print(f"Error scraping profile {profile_url}: {e}")
 
     def close(self):
-        """Close the WebDriver."""
+        """Close the browser."""
         if self.driver:
             self.driver.quit()
-            print("WebDriver closed.")
+        # Close the RocketReach browser if it was opened
+        if self.rr_browser:
+            self.rr_browser.close()
 
     def visit_profiles(
         self,
