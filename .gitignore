@@ -4,3 +4,4 @@
 .env
 *.csv
 rr.py
+website/

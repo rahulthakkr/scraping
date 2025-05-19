@@ -1,12 +1,13 @@
 import os
 import time
 
-import pandas as pd
 from dotenv import load_dotenv
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    TimeoutException,
+)
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -28,8 +29,18 @@ class RocketReachBrowser:
 
         # Set up Chrome options
         chrome_options = Options()
+
+        # Mobile Emulation DISABLED
+        # mobile_emulation = {
+        #     "deviceMetrics": {"width": 393, "height": 851, "pixelRatio": 3.0},
+        #     "userAgent": "Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
+        # }
+        # chrome_options.add_experimental_option("mobileEmulation", mobile_emulation)
+
+        # Restore standard desktop options
         chrome_options.add_argument("--start-maximized")  # Start maximized
         chrome_options.add_argument("--disable-notifications")  # Disable notifications
+        chrome_options.add_argument("--window-size=1280,800")  # Ensure reasonable size
 
         # Initialize Chrome WebDriver with options
         self.driver = webdriver.Chrome(
@@ -40,6 +51,7 @@ class RocketReachBrowser:
     def login(self):
         """Log in to RocketReach."""
         try:
+            # Proceed with normal form login if cookie login
             self.driver.get("https://rocketreach.co/login")
             time.sleep(2)
 
@@ -56,17 +68,17 @@ class RocketReachBrowser:
             # Check for reCAPTCHA - this is a simple detection, not solving it automatically
             try:
                 recaptcha = self.driver.find_element(By.ID, "RecaptchaInput")
-                if recaptcha:
-                    print("CAPTCHA detected! You may need to manually solve it.")
-                    # Give user time to solve CAPTCHA if needed
-                    input("Press Enter after you've solved the CAPTCHA (if needed)...")
+                # if recaptcha:
+                #     print("CAPTCHA detected! You may need to manually solve it.")
+                #     # Give user time to solve CAPTCHA if needed
+                #     input("Press Enter after you've solved the CAPTCHA (if needed)...")
             except NoSuchElementException:
                 # No CAPTCHA or it's already handled
                 pass
 
             # Click login button
-            login_button = self.driver.find_element(
-                By.XPATH, "//button[@type='submit']"
+            login_button = self.wait.until(
+                EC.element_to_be_clickable((By.XPATH, "//button[@type='submit']"))
             )
             login_button.click()
 
@@ -121,307 +133,201 @@ class RocketReachBrowser:
             print(f"Error during RocketReach login: {e}")
             return False
 
-    def search_by_linkedin_url(self, linkedin_url):
-        """
-        Search for a profile on RocketReach using a LinkedIn URL.
+    def get_contact_email(self, linkedin_url):
+        """Navigate to RocketReach person page, click 'Get Contact Info' using JS, and return email."""
+        # Encode slashes in LinkedIn URL for RocketReach query param
+        encoded_link = linkedin_url.replace("/", "%2F")
+        url = f"https://rocketreach.co/person?start=1&pageSize=10&link={encoded_link}"
+        self.driver.get(url)
+        # Allow some time for initial page load before executing script
+        time.sleep(5)
 
-        Args:
-            linkedin_url: The LinkedIn profile URL
+        # Debug: Print page title and URL to ensure we're on the right page
+        print(f"Page loaded. Title: {self.driver.title}")
+        print(f"Current URL: {self.driver.current_url}")
 
-        Returns:
-            Dictionary with extracted profile data or None if search failed
+        # --- JavaScript Click Logic ---
+        # Refined script focusing on the specific button structure
+        js_click_script = r"""
+        return (async () => {
+            var callback = arguments[arguments.length - 1];
+            var clicked = false;
+            var logMessages = [];
+
+            logMessages.push('Looking for span[data-onboarding-id="get-contact-button"]...');
+            // Try finding the specific span first
+            var targetSpan = document.querySelector('span[data-onboarding-id="get-contact-button"]');
+
+            if (!targetSpan) {
+                logMessages.push('Span with data-onboarding-id="get-contact-button" not found.');
+            } else {
+                logMessages.push('Span found. Looking for button inside...');
+                // Look for a button, prioritizing common classes if needed, otherwise any button
+                var button = targetSpan.querySelector('button.button-primary') || targetSpan.querySelector('button');
+
+                if (!button) {
+                    logMessages.push('Button not found within the target span.');
+                } else {
+                    logMessages.push('Button found within span. Text: "' + (button.textContent || button.innerText || '').trim() + '". Checking visibility...');
+
+                    // Robust visibility check
+                    var rect = button.getBoundingClientRect();
+                    var computedStyle = window.getComputedStyle(button);
+                    var isVisible = (
+                        rect.width > 0 &&
+                        rect.height > 0 &&
+                        computedStyle.visibility !== 'hidden' &&
+                        computedStyle.display !== 'none' &&
+                        computedStyle.opacity !== '0' &&
+                        button.offsetParent !== null // Check if it's part of the layout
+                    );
+
+                    logMessages.push('Button visibility: ' + isVisible);
+
+                    if (isVisible) {
+                        logMessages.push('Attempting to click visible button...');
+                        try {
+                            button.scrollIntoView({ block: 'center', inline: 'center' });
+                            await new Promise(resolve => setTimeout(resolve, 200)); // Slightly longer delay after scroll
+
+                            // Attempt 1: Standard click
+                            button.click();
+                            clicked = true;
+                            logMessages.push('Standard click successful.');
+
+                        } catch (e1) {
+                            logMessages.push('Standard click failed: ' + e1.message + '. Trying dispatchEvent...');
+                            try {
+                                // Attempt 2: Dispatch MouseEvent
+                                var clickEvent = new MouseEvent('click', {
+                                    view: window,
+                                    bubbles: true,
+                                    cancelable: true
+                                });
+                                button.dispatchEvent(clickEvent);
+                                clicked = true; // Assume success if dispatch doesn't error immediately
+                                logMessages.push('dispatchEvent click successful.');
+                            } catch (e2) {
+                                logMessages.push('dispatchEvent click also failed: ' + e2.message);
+                                clicked = false; // Definitely failed
+                            }
+                        }
+                    } else {
+                        logMessages.push('Button found but determined to be not visible.');
+                    }
+                }
+            }
+
+            if (!clicked) {
+                logMessages.push('Button click was not successful.');
+            }
+
+            console.log(logMessages.join('\n'));
+            callback(clicked);
+        })();
         """
+
+        email = None
         try:
-            # Navigate to the search page (Person Search)
-            self.driver.get("https://rocketreach.co/person")
-            # Wait for the search page to load (look for a stable element like the filter header)
-            self.wait.until(
-                EC.presence_of_element_located(
-                    (By.XPATH, "//div[contains(@class, 'search-input-header')]")
-                )
+            print(
+                "Executing JavaScript to find and click the visible 'Get Contact Info' button..."
+            )
+            # Ensure page is fully loaded - increase wait time slightly before script exec
+            WebDriverWait(self.driver, 20).until(  # Increased wait to 20s
+                lambda d: d.execute_script("return document.readyState") == "complete"
             )
 
-            # Find the general keyword search input field using its placeholder
-            search_input = self.wait.until(
-                EC.presence_of_element_located(
-                    (
-                        By.XPATH,
-                        # Using the placeholder for the general search input
-                        "//input[@placeholder='e.g. LinkedIn URL, Job Title, Industry, Revenue, Number of Employees, Years of Experience, etc.']",
-                    )
-                )
-            )
-            search_input.clear()
-            search_input.send_keys(linkedin_url)
-            time.sleep(0.5)  # Brief pause for JS/UI updates after input
-            search_input.send_keys(Keys.RETURN)  # Simulate pressing Enter
+            # Set script timeout for async script
+            self.driver.set_script_timeout(30)  # Allow 30s for the async script itself
 
-            # Wait for search results to appear after submitting the search
-            try:
-                # Look for the container holding search result cards
-                results_container = self.wait.until(
-                    EC.presence_of_element_located(
-                        (
-                            By.XPATH,
-                            "//div[contains(@class, 'search-results')]",  # Wait for the main results area
-                        )
-                    )
-                )
-                # Now specifically wait for at least one person card within that container
-                first_result = self.wait.until(
-                    EC.element_to_be_clickable(  # Ensure it's clickable
-                        (
-                            By.XPATH,
-                            ".//div[contains(@class, 'person-card')]",  # Search within results_container
-                        )
-                    ),
-                    message=f"No clickable person card found for LinkedIn URL: {linkedin_url}",
-                )
+            # Execute the script using execute_async_script
+            click_performed = self.driver.execute_async_script(js_click_script)
 
-                # Ensure the element is visible before clicking
-                self.wait.until(
-                    EC.visibility_of(first_result),
-                    message=f"First result card not visible for LinkedIn URL: {linkedin_url}",
+            if click_performed:
+                print(
+                    "JavaScript reported a click was performed. Waiting for email to appear..."
                 )
-
-                # Scroll the element into view before clicking
-                self.driver.execute_script(
-                    "arguments[0].scrollIntoView(true);", first_result
-                )
-                time.sleep(1.0)  # Increased pause after scroll
-
-                # Click on the first search result using JavaScript
-                self.driver.execute_script("arguments[0].click();", first_result)
-                # first_result.click() # Original click commented out
-
-                # Wait for the profile page to load (e.g., wait for the name element)
-                self.wait.until(
-                    EC.presence_of_element_located(
-                        (By.XPATH, "//h1[contains(@class, 'name')]")
-                    )
-                )
-                time.sleep(1)  # Add a small pause after profile loads
-
-                # --- Click 'Get Contact Info' button --- START
+                # Wait longer for the email element to potentially load after the JS click
                 try:
-                    get_contact_button = self.wait.until(
-                        EC.element_to_be_clickable(
+                    email_element = WebDriverWait(self.driver, 30).until(
+                        EC.presence_of_element_located(
                             (
-                                By.XPATH,
-                                "//button[contains(., 'Get Contact Info') and not(@disabled)]",
+                                By.CSS_SELECTOR,
+                                # Combined selector for potential email links
+                                "a[data-testid='email-phone-text-mobile'], a[href^='mailto:']",
                             )
                         )
                     )
-                    # Scroll button into view if necessary
-                    self.driver.execute_script(
-                        "arguments[0].scrollIntoView(true);", get_contact_button
-                    )
-                    time.sleep(0.5)
-                    get_contact_button.click()
-                    print("Clicked 'Get Contact Info' button.")
-                    time.sleep(3)  # Wait for contact info to potentially reveal
-                except (NoSuchElementException, TimeoutException):
-                    print(
-                        "'Get Contact Info' button not found or not clickable (might be disabled or info already shown)."
-                    )
-                # --- Click 'Get Contact Info' button --- END
-
-                # Now we're on the profile page, extract data
-                return self.extract_profile_data()
-
-            except TimeoutException:
-                print(f"No results found or loaded for LinkedIn URL: {linkedin_url}")
-                return None
+                    email = email_element.text.strip()
+                    if not email or "@" not in email:
+                        print(
+                            "Email element found but no valid email address extracted."
+                        )
+                        email = None
+                    else:
+                        print(f"Successfully extracted email: {email}")
+                except TimeoutException:
+                    print("Email element not found after JavaScript click (timed out).")
+                except Exception as e:
+                    print(f"Error extracting email after JavaScript click: {e}")
+            else:
+                print(
+                    "JavaScript execution finished, but reported that no visible button was clicked."
+                )
 
         except Exception as e:
-            print(f"Error searching by LinkedIn URL '{linkedin_url}': {e}")
+            print(
+                f"Error during JavaScript execution or subsequent email extraction: {e}"
+            )
+
+        # --- End JavaScript Click Logic ---
+
+        # Debugging and final return
+        if email:
+            return email
+        else:
+            # Add more info to the failure message
+            print(
+                "Failed to extract email using JavaScript click method. Check browser console for detailed logs from the script."
+            )
+            # Save screenshot if we failed to get email
+            page_snippet = self.driver.page_source[:1000]  # Increased snippet size
+            print(f"Page source snippet (first 1000 chars): {page_snippet}")
+            try:
+                screenshot_path = "debug_screenshot.png"
+                self.driver.save_screenshot(screenshot_path)
+                print(f"Screenshot saved to {screenshot_path} for debugging.")
+            except Exception as e:
+                print(f"Error saving screenshot: {e}")
             return None
 
-    def extract_profile_data(self):
-        """
-        Extract data from the current RocketReach profile page.
-
-        Returns:
-            Dictionary with profile data
-        """
-        profile_data = {}
-
-        try:
-            # Extract name
-            name_elem = self.wait.until(
-                EC.presence_of_element_located(
-                    (By.XPATH, "//h1[contains(@class, 'name')]")
-                )
-            )
-            profile_data["name"] = name_elem.text.strip()
-        except (NoSuchElementException, TimeoutException):
-            profile_data["name"] = "N/A"
-
-        try:
-            # Extract title
-            title_elem = self.driver.find_element(
-                By.XPATH, "//div[contains(@class, 'title')]"
-            )
-            profile_data["title"] = title_elem.text.strip()
-        except NoSuchElementException:
-            profile_data["title"] = "N/A"
-
-        try:
-            # Extract company
-            company_elem = self.driver.find_element(
-                By.XPATH, "//div[contains(@class, 'company')]"
-            )
-            profile_data["company"] = company_elem.text.strip()
-        except NoSuchElementException:
-            profile_data["company"] = "N/A"
-
-        # Extract contact information - check for revealed emails
-        try:
-            # Look for revealed emails section
-            revealed_emails = self.driver.find_elements(
-                By.XPATH,
-                "//div[contains(@class, 'email-section')]//span[contains(@class, 'verified')]",
-            )
-            if revealed_emails:
-                profile_data["email"] = revealed_emails[0].text.strip()
-            else:
-                # Check if "Reveal Email" button exists
-                reveal_button = self.driver.find_element(
-                    By.XPATH, "//button[contains(text(), 'Reveal Email')]"
-                )
-                if reveal_button:
-                    print("Email exists but needs to be revealed (requires credits)")
-                    profile_data["email"] = "Needs Credits to Reveal"
-                else:
-                    profile_data["email"] = "Not Available"
-        except NoSuchElementException:
-            profile_data["email"] = "Not Available"
-
-        try:
-            # Extract phone if revealed
-            revealed_phones = self.driver.find_elements(
-                By.XPATH,
-                "//div[contains(@class, 'phone-section')]//span[contains(@class, 'verified')]",
-            )
-            if revealed_phones:
-                profile_data["phone"] = revealed_phones[0].text.strip()
-            else:
-                # Check if "Reveal Phone" button exists
-                reveal_phone_button = self.driver.find_element(
-                    By.XPATH, "//button[contains(text(), 'Reveal Phone')]"
-                )
-                if reveal_phone_button:
-                    print("Phone exists but needs to be revealed (requires credits)")
-                    profile_data["phone"] = "Needs Credits to Reveal"
-                else:
-                    profile_data["phone"] = "Not Available"
-        except NoSuchElementException:
-            profile_data["phone"] = "Not Available"
-
-        # Extract social links
-        try:
-            linkedin_elem = self.driver.find_element(
-                By.XPATH, "//a[contains(@href, 'linkedin.com')]"
-            )
-            profile_data["linkedin_url"] = linkedin_elem.get_attribute("href")
-        except NoSuchElementException:
-            # If we're here, we already have the LinkedIn URL that was used for the search
-            pass
-
-        try:
-            twitter_elem = self.driver.find_element(
-                By.XPATH, "//a[contains(@href, 'twitter.com')]"
-            )
-            profile_data["twitter"] = twitter_elem.get_attribute("href")
-        except NoSuchElementException:
-            profile_data["twitter"] = "N/A"
-
-        try:
-            # Extract company website
-            website_elem = self.driver.find_element(
-                By.XPATH, "//a[contains(@class, 'website-link')]"
-            )
-            profile_data["website"] = website_elem.get_attribute("href")
-        except NoSuchElementException:
-            profile_data["website"] = "N/A"
-
-        return profile_data
-
-    def close(self):
-        """Close the browser."""
+    def close_driver(self):
+        """Close the WebDriver."""
         if self.driver:
             self.driver.quit()
+            print("Browser closed.")
 
 
-def main():
-    # Initialize the RocketReach browser
+# Example Usage (optional)
+if __name__ == "__main__":
+    # Create an instance of the browser automation class
     rr_browser = RocketReachBrowser()
 
-    try:
-        # Setup and login
-        rr_browser.setup_driver()
-        if not rr_browser.login():
-            print("Unable to login to RocketReach. Exiting.")
-            rr_browser.close()
-            return
+    # Set up the driver
+    rr_browser.setup_driver()
 
-        # Ask for LinkedIn profiles file
-        linkedin_file = input("Enter the path to the CSV file with LinkedIn profiles: ")
-        if not os.path.exists(linkedin_file):
-            print(f"File not found: {linkedin_file}")
-            rr_browser.close()
-            return
+    # Log in
+    if rr_browser.login():
+        # LinkedIn URL to search for
+        linkedin_url = "https://www.linkedin.com/in/shreya-rajpal/"  # Example
 
-        # Read the LinkedIn profiles
-        try:
-            df = pd.read_csv(linkedin_file)
-            # Check if the required column exists before trying to rename
-            if "Profile URL" not in df.columns:
-                print("The CSV file must have a 'Profile URL' column.")
-                rr_browser.close()
-                return
-            df["linkedin_url"] = df["Profile URL"]  # Rename for consistency internally
-        except Exception as e:
-            print(f"Error reading CSV file: {e}")
-            rr_browser.close()
-            return
+        # Get the contact email
+        email = rr_browser.get_contact_email(linkedin_url)
 
-        # Create a list to store the enriched data
-        enriched_data = []
+        if email:
+            print(f"\nSuccessfully retrieved email: {email}")
+        else:
+            print("\nCould not retrieve email.")
 
-        # Process each LinkedIn URL
-        for index, row in df.iterrows():
-            linkedin_url = row["linkedin_url"]
-            print(f"Processing {index + 1}/{len(df)}: {linkedin_url}")
-
-            # Search for the profile on RocketReach
-            profile_data = rr_browser.search_by_linkedin_url(linkedin_url)
-
-            if profile_data:
-                # Combine the LinkedIn data with RocketReach data
-                combined_data = {**row.to_dict(), **profile_data}
-                enriched_data.append(combined_data)
-                print(
-                    f"Successfully enriched profile: {profile_data.get('name', 'Unknown')}"
-                )
-            else:
-                # Keep the original data
-                enriched_data.append(row.to_dict())
-                print(f"Could not enrich profile for URL: {linkedin_url}")
-
-            # Avoid rate limiting
-            time.sleep(2)
-
-        # Save the enriched data to a new CSV file
-        output_file = linkedin_file.replace(".csv", "_enriched.csv")
-        pd.DataFrame(enriched_data).to_csv(output_file, index=False)
-        print(f"Enriched data saved to: {output_file}")
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
-    finally:
-        rr_browser.close()
-
-
-if __name__ == "__main__":
-    main()
+    # Close the browser
+    rr_browser.close_driver()
